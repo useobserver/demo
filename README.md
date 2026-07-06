@@ -1,4 +1,6 @@
-# Observer Demo
+<p align="center">
+    <img src="assets/headline.png" alt="Observer Demo" height="100%">
+</p>
 
 A self-contained stack that exercises **every probe source Observer supports**, against real local services. One `docker compose up`, one `observer apply`, and you have a live dashboard with sixteen metrics across fourteen source types — including one that intentionally flips status every minute so you can watch Observer react.
 
