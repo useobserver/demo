@@ -1,0 +1,400 @@
+# Observer demo config — one metric per probe source, applied with the
+# Observer CLI:
+#
+#   export OBSERVER_API_KEY=obs_pub_...      # write:config scope
+#   observer apply -f observer.yaml          # add --dry-run to preview
+#
+# Every metric is pinned to the agent named "demo-agent" — name your agent
+# exactly that when you create it in the console (or search/replace below).
+#
+# Threshold semantics are strict everywhere: `over` is >, `under` is <.
+
+apiVersion: observer/v1
+
+metrics:
+  # ── prometheus — PromQL against the bundled Prometheus ───────────────
+  - key: demo-prometheus-up
+    title: Prometheus self-scrape
+    description: "up{} for Prometheus scraping itself. 1 = up, 0 = down."
+    source_type: prometheus
+    source_config:
+      query: 'up{job="prometheus"}'
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 1
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── http — status + latency of a real endpoint ───────────────────────
+  - key: demo-http-prometheus-health
+    title: Prometheus health endpoint
+    description: HTTP GET against Prometheus /-/healthy. Value is response time in ms.
+    source_type: http
+    source_config:
+      url: http://prometheus:9090/-/healthy
+      expected_status: 200
+    thresholds:
+      healthy_operation: under
+      healthy_value: 1000
+      unhealthy_operation: over
+      unhealthy_value: 5000
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── tcp — raw connect timing ──────────────────────────────────────────
+  - key: demo-tcp-postgres
+    title: Postgres TCP connect
+    description: TCP open-and-close against postgres:5432. Value is connect time in ms.
+    source_type: tcp
+    source_config:
+      host: postgres
+      port: 5432
+    thresholds:
+      healthy_operation: under
+      healthy_value: 500
+      unhealthy_operation: over
+      unhealthy_value: 2000
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── dns — public resolution through a specific resolver ──────────────
+  - key: demo-dns-resolve
+    title: DNS resolution (use.observer)
+    description: A-record lookup via Cloudflare's 1.1.1.1. Value is resolve time in ms.
+    source_type: dns
+    source_config:
+      domain: use.observer
+      record_type: A
+      resolver: 1.1.1.1
+    thresholds:
+      healthy_operation: under
+      healthy_value: 1000
+      unhealthy_operation: over
+      unhealthy_value: 5000
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── tls_cert — certificate expiry watch ───────────────────────────────
+  - key: demo-tls-expiry
+    title: TLS certificate expiry (use.observer)
+    description: Days until the certificate expires.
+    source_type: tls_cert
+    source_config:
+      host: use.observer
+      port: 443
+    thresholds:
+      healthy_operation: over
+      healthy_value: 30
+      unhealthy_operation: under
+      unhealthy_value: 7
+    interval: 5
+    interval_agent_push: 15
+    agent: demo-agent
+
+  # ── icmp — ping inside the compose network ────────────────────────────
+  # Needs CAP_NET_RAW on the agent container (set in docker-compose.yml).
+  - key: demo-icmp-postgres
+    title: Ping postgres container
+    description: ICMP latency to the postgres container in ms.
+    source_type: icmp
+    source_config:
+      host: postgres
+      interpretation: latency
+    thresholds:
+      healthy_operation: under
+      healthy_value: 100
+      unhealthy_operation: over
+      unhealthy_value: 1000
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── grpc — standard gRPC health protocol ──────────────────────────────
+  - key: demo-grpc-health
+    title: gRPC health check
+    description: grpc.health.v1.Health/Check against the agnhost server. 1 = SERVING.
+    source_type: grpc
+    source_config:
+      host: grpc
+      port: 5000
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 1
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── websocket — application-level round trip ──────────────────────────
+  - key: demo-websocket-echo
+    title: WebSocket echo round-trip
+    description: Sends a message to the echo server and times the reply, in ms.
+    source_type: websocket
+    source_config:
+      url: ws://websocket:8080
+      ping_mode: message
+      send_message: observer-demo
+      expect_message: observer-demo
+      interpretation: round_trip_latency
+    thresholds:
+      healthy_operation: under
+      healthy_value: 250
+      unhealthy_operation: over
+      unhealthy_value: 2000
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── database — four engines, DSNs referenced by env var NAME only ────
+  - key: demo-db-postgres
+    title: Postgres row count
+    description: SELECT count over the seeded demo_orders table.
+    source_type: database
+    source_config:
+      kind: postgres
+      connection_string_ref: DEMO_POSTGRES_DSN
+      query: SELECT count(*) FROM demo_orders
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 1
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  - key: demo-db-mysql
+    title: MySQL row count
+    description: SELECT count over the seeded demo_orders table.
+    source_type: database
+    source_config:
+      kind: mysql
+      connection_string_ref: DEMO_MYSQL_DSN
+      query: SELECT COUNT(*) FROM demo_orders
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 1
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  - key: demo-db-redis
+    title: Redis key count
+    description: DBSIZE via the read-only command allowlist. Zero keys is fine — the probe proves connectivity.
+    source_type: database
+    source_config:
+      kind: redis
+      connection_string_ref: DEMO_REDIS_DSN
+      query: DBSIZE
+    thresholds:
+      healthy_operation: over
+      healthy_value: -1
+      unhealthy_operation: under
+      unhealthy_value: 0
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  - key: demo-db-mongo
+    title: MongoDB document count
+    description: estimatedDocumentCount over the seeded demo.events collection.
+    source_type: database
+    source_config:
+      kind: mongodb
+      connection_string_ref: DEMO_MONGO_DSN
+      query: '{"db":"demo","collection":"events","op":"estimatedDocumentCount"}'
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 1
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── otlp — push-mode gauge into the agent's receiver ─────────────────
+  # The pusher's value follows the clock's seconds, so this metric flips
+  # healthy → degraded → unhealthy about once a minute. That's the demo:
+  # watch live status transitions without breaking anything.
+  - key: demo-otlp-queue-depth
+    title: Queue depth (OTLP push)
+    description: Gauge pushed by the otlp-pusher container. Sweeps 0-59 to demonstrate live status flips.
+    source_type: otlp
+    source_config:
+      metric_name: demo.queue.depth
+      aggregation: latest
+      staleness_ms: 120000
+    thresholds:
+      healthy_operation: under
+      healthy_value: 45
+      unhealthy_operation: over
+      unhealthy_value: 55
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── loki — LogQL aggregation ──────────────────────────────────────────
+  - key: demo-loki-log-rate
+    title: Demo log volume (Loki)
+    description: count_over_time of the demo app's log lines in the last 5 minutes.
+    source_type: loki
+    source_config:
+      base_url: http://loki:3100
+      query: sum(count_over_time({app="demo"}[5m]))
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 1
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── elasticsearch — aggregation over recent documents ────────────────
+  - key: demo-es-recent-events
+    title: Recent events (Elasticsearch)
+    description: value_count of documents indexed in the last 5 minutes.
+    source_type: elasticsearch
+    source_config:
+      base_url: http://elasticsearch:9200
+      index: demo-events
+      query:
+        query:
+          range:
+            "@timestamp":
+              gte: now-5m
+        aggs:
+          recent_events:
+            value_count:
+              field: "@timestamp"
+      agg_name: recent_events
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 1
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── host — the agent's own vitals ─────────────────────────────────────
+  - key: demo-host-cpu
+    title: Agent host CPU
+    description: CPU utilisation (%) of the machine running the agent.
+    source_type: host
+    source_config:
+      metric: cpu
+    thresholds:
+      healthy_operation: under
+      healthy_value: 80
+      unhealthy_operation: over
+      unhealthy_value: 95
+    interval: 1
+    interval_agent_push: 10
+    agent: demo-agent
+
+  # ── manual — operator-controlled status ───────────────────────────────
+  # No probe runs for this one. Set its status from the console (or the
+  # API / MCP) — useful for third-party dependencies you track by hand.
+  - key: demo-manual-vendor
+    title: Payment vendor (manual)
+    description: Manually tracked upstream dependency. Flip its status from the console.
+    source_type: manual
+    source_config: {}
+    thresholds:
+      healthy_operation: over
+      healthy_value: 0
+      unhealthy_operation: under
+      unhealthy_value: 0
+    interval: 1
+    interval_agent_push: 60
+    agent: demo-agent
+
+  # ── cloudwatch (OPTIONAL) — real AWS metric via your credentials ─────
+  # 1. Uncomment the AWS_* env passthrough in docker-compose.yml.
+  # 2. Export AWS credentials in .env (or use an instance role).
+  # 3. Uncomment this block and adjust region/namespace to a metric you
+  #    actually have, then re-run `observer apply`.
+  #
+  # - key: demo-cloudwatch-cpu
+  #   title: EC2 CPU (CloudWatch)
+  #   description: Average CPUUtilization across the region, straight from GetMetricData.
+  #   source_type: cloudwatch
+  #   source_config:
+  #     region: us-east-1
+  #     namespace: AWS/EC2
+  #     metric_name: CPUUtilization
+  #     statistic: Average
+  #     period_seconds: 300
+  #   thresholds:
+  #     healthy_operation: under
+  #     healthy_value: 80
+  #     unhealthy_operation: over
+  #     unhealthy_value: 95
+  #   interval: 5
+  #   interval_agent_push: 15
+  #   agent: demo-agent
+
+services:
+  - key: demo-datastores
+    name: Datastores
+    description: The four databases behind the demo, probed natively.
+    slos:
+      - key: demo-postgres-availability
+        metric: demo-db-postgres
+        name: Postgres availability
+        target_pct: 99.9
+        window_days: 30
+
+  - key: demo-edge
+    name: Edge & network
+    description: HTTP, DNS, TLS, and connectivity checks.
+    slos:
+      - key: demo-http-availability
+        metric: demo-http-prometheus-health
+        name: HTTP endpoint availability
+        target_pct: 99.5
+        window_days: 30
+
+  - key: demo-telemetry
+    name: Telemetry pipeline
+    description: Push and pull telemetry sources — OTLP, Loki, Elasticsearch.
+
+# ── status page (OPTIONAL) ──────────────────────────────────────────────
+# Subdomains are globally unique — pick your own, then uncomment and
+# re-run `observer apply`. The page goes live at <subdomain>.use.observer.
+#
+# pages:
+#   - key: demo-status
+#     subdomain: my-unique-demo-subdomain
+#     title: Demo Status
+#     metrics:
+#       - metric: demo-http-prometheus-health
+#         group: Edge
+#       - metric: demo-dns-resolve
+#         group: Edge
+#       - metric: demo-tls-expiry
+#         group: Edge
+#       - metric: demo-db-postgres
+#         group: Datastores
+#       - metric: demo-db-mysql
+#         group: Datastores
+#       - metric: demo-db-redis
+#         group: Datastores
+#       - metric: demo-db-mongo
+#         group: Datastores
+#       - metric: demo-otlp-queue-depth
+#         group: Telemetry
+#       - metric: demo-loki-log-rate
+#         group: Telemetry
+#       - metric: demo-es-recent-events
+#         group: Telemetry

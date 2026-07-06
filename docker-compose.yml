@@ -1,0 +1,161 @@
+# Observer demo stack — one compose file that exercises every probe source
+# Observer supports, against real local services. Nothing here is mocked:
+# the agent genuinely pings, queries, connects, and receives pushes.
+#
+# Quickstart (see README.md for the full walkthrough):
+#   1. cp .env.example .env       # paste your AGENT_KEY
+#   2. docker compose up -d
+#   3. observer apply -f observer.yaml
+#
+# Sources covered: prometheus, http, tcp, dns, tls_cert, icmp, grpc,
+# websocket, database (postgres/mysql/redis/mongodb), otlp (push), loki,
+# elasticsearch, host, manual — plus an optional cloudwatch block in
+# observer.yaml gated on AWS credentials.
+
+services:
+  # ── The Observer agent ────────────────────────────────────────────────
+  # Runs inside this network, computes every verdict locally, and pushes
+  # only status events to Observer Cloud. Raw metric data never leaves.
+  observer-agent:
+    image: ghcr.io/useobserver/agent:latest
+    restart: unless-stopped
+    # ICMP probes shell out to `ping`, which needs a raw socket.
+    cap_add:
+      - NET_RAW
+    environment:
+      AGENT_KEY: ${AGENT_KEY:?set AGENT_KEY in .env — create an agent in the Observer console}
+      CLOUD_SERVER_URL: ${CLOUD_SERVER_URL:-https://use.observer}
+      # Prometheus source
+      PROMETHEUS_SERVER_URL: http://prometheus:9090
+      PROMETHEUS_BASIC_AUTH_ENABLED: "false"
+      # OTLP push receiver — non-loopback bind requires a bearer token.
+      OBSERVER_OTLP_LISTEN_ADDR: 0.0.0.0:4318
+      OBSERVER_OTLP_BEARER_TOKEN: ${OTLP_TOKEN:-demo-otlp-token}
+      # Database probes reference DSNs by env var NAME — the cloud only
+      # ever stores the name (e.g. "DEMO_POSTGRES_DSN"), never the value.
+      DEMO_POSTGRES_DSN: postgres://demo:demo@postgres:5432/demo
+      DEMO_MYSQL_DSN: mysql://demo:demo@mysql:3306/demo
+      DEMO_REDIS_DSN: redis://redis:6379
+      DEMO_MONGO_DSN: mongodb://mongo:27017
+      # Optional: CloudWatch. Uncomment (and the metric in observer.yaml)
+      # to read a real AWS metric with your local credentials.
+      # AWS_REGION: ${AWS_REGION:-}
+      # AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      # AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      # AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+    depends_on:
+      - prometheus
+      - postgres
+      - mysql
+      - redis
+      - mongo
+
+  # ── prometheus source ─────────────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+
+  # ── database probes (4 kinds) + tcp + icmp targets ────────────────────
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: demo
+      POSTGRES_PASSWORD: demo
+      POSTGRES_DB: demo
+    volumes:
+      - ./seed/postgres-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  mysql:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: demo
+      MYSQL_DATABASE: demo
+      MYSQL_USER: demo
+      MYSQL_PASSWORD: demo
+    volumes:
+      - ./seed/mysql-init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    volumes:
+      - ./seed/mongo-init.js:/docker-entrypoint-initdb.d/init.js:ro
+
+  # ── grpc probe target ──────────────────────────────────────────────────
+  # agnhost's grpc-health-checking serves the standard
+  # grpc.health.v1.Health/Check protocol on :5000 — exactly what the
+  # Observer gRPC probe speaks (and nothing more).
+  grpc:
+    image: registry.k8s.io/e2e-test-images/agnhost:2.53
+    restart: unless-stopped
+    command: ["grpc-health-checking", "--port", "5000"]
+
+  # ── websocket probe target ─────────────────────────────────────────────
+  # Echo server: the probe sends a message and expects it back, measuring
+  # true round-trip latency over the socket.
+  websocket:
+    image: jmalloc/echo-server:0.3.7
+    restart: unless-stopped
+    environment:
+      PORT: "8080"
+
+  # ── loki source + a log producer ───────────────────────────────────────
+  loki:
+    image: grafana/loki:3.1.0
+    restart: unless-stopped
+    command: -config.file=/etc/loki/local-config.yaml
+
+  loki-logger:
+    image: curlimages/curl:8.9.1
+    restart: unless-stopped
+    depends_on:
+      - loki
+    entrypoint: ["/bin/sh", "/work/loki-push.sh"]
+    volumes:
+      - ./scripts/loki-push.sh:/work/loki-push.sh:ro
+
+  # ── elasticsearch source + a document seeder ───────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.14.3
+    restart: unless-stopped
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms256m -Xmx256m
+    # Demo-sized heap; first start takes ~30s.
+
+  es-seeder:
+    image: curlimages/curl:8.9.1
+    restart: unless-stopped
+    depends_on:
+      - elasticsearch
+    entrypoint: ["/bin/sh", "/work/es-seed.sh"]
+    volumes:
+      - ./scripts/es-seed.sh:/work/es-seed.sh:ro
+
+  # ── otlp push producer ─────────────────────────────────────────────────
+  # Pushes a gauge (demo.queue.depth) to the agent's OTLP receiver every
+  # 15s. The value tracks the clock's seconds, so the metric crosses its
+  # thresholds about once a minute — you'll see live healthy→degraded→
+  # unhealthy transitions on the status page.
+  otlp-pusher:
+    image: curlimages/curl:8.9.1
+    restart: unless-stopped
+    depends_on:
+      - observer-agent
+    environment:
+      OTLP_TOKEN: ${OTLP_TOKEN:-demo-otlp-token}
+    entrypoint: ["/bin/sh", "/work/otlp-push.sh"]
+    volumes:
+      - ./scripts/otlp-push.sh:/work/otlp-push.sh:ro
