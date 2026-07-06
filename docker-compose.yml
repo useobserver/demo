@@ -39,10 +39,10 @@ services:
       DEMO_MONGO_DSN: mongodb://mongo:27017
       # Optional: CloudWatch. Uncomment (and the metric in observer.yaml)
       # to read a real AWS metric with your local credentials.
-      # AWS_REGION: ${AWS_REGION:-}
-      # AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
-      # AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      # AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
     depends_on:
       - prometheus
       - postgres
@@ -105,7 +105,7 @@ services:
   # Echo server: the probe sends a message and expects it back, measuring
   # true round-trip latency over the socket.
   websocket:
-    image: jmalloc/echo-server:0.3.7
+    image: jmalloc/echo-server:v0.3.7
     restart: unless-stopped
     environment:
       PORT: "8080"

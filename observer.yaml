@@ -97,23 +97,27 @@ metrics:
     interval_agent_push: 15
     agent: demo-agent
 
-  # ── icmp — ping inside the compose network ────────────────────────────
-  # Needs CAP_NET_RAW on the agent container (set in docker-compose.yml).
-  - key: demo-icmp-postgres
-    title: Ping postgres container
-    description: ICMP latency to the postgres container in ms.
-    source_type: icmp
-    source_config:
-      host: postgres
-      interpretation: latency
-    thresholds:
-      healthy_operation: under
-      healthy_value: 100
-      unhealthy_operation: over
-      unhealthy_value: 1000
-    interval: 1
-    interval_agent_push: 10
-    agent: demo-agent
+  # ── icmp — ping (OPTIONAL: needs a custom agent image) ────────────────
+  # The published agent image (oven/bun:*-distroless) ships no `ping`
+  # binary, so ICMP reports no_data (reason icmp_unavailable) out of the
+  # box. To use it, build an agent image that includes iputils and give
+  # the container CAP_NET_RAW, then uncomment this block + its page entry.
+  #
+  # - key: demo-icmp-postgres
+  #   title: Ping postgres container
+  #   description: ICMP latency to the postgres container in ms.
+  #   source_type: icmp
+  #   source_config:
+  #     host: postgres
+  #     interpretation: latency
+  #   thresholds:
+  #     healthy_operation: under
+  #     healthy_value: 100
+  #     unhealthy_operation: over
+  #     unhealthy_value: 1000
+  #   interval: 1
+  #   interval_agent_push: 10
+  #   agent: demo-agent
 
   # ── grpc — standard gRPC health protocol ──────────────────────────────
   - key: demo-grpc-health
@@ -132,17 +136,18 @@ metrics:
     interval_agent_push: 10
     agent: demo-agent
 
-  # ── websocket — application-level round trip ──────────────────────────
+  # ── websocket — handshake latency ─────────────────────────────────────
+  # handshake_latency times the WS upgrade — robust against any server.
+  # (Round-trip matching isn't used here because jmalloc/echo-server sends
+  # a "Request served by …" banner frame first, which won't equal a fixed
+  # expect_message.)
   - key: demo-websocket-echo
-    title: WebSocket echo round-trip
-    description: Sends a message to the echo server and times the reply, in ms.
+    title: WebSocket handshake
+    description: WebSocket upgrade handshake latency to the echo server, in ms.
     source_type: websocket
     source_config:
       url: ws://websocket:8080
-      ping_mode: message
-      send_message: observer-demo
-      expect_message: observer-demo
-      interpretation: round_trip_latency
+      interpretation: handshake_latency
     thresholds:
       healthy_operation: under
       healthy_value: 250
@@ -320,19 +325,20 @@ metrics:
     agent: demo-agent
 
   # ── cloudwatch (OPTIONAL) — real AWS metric via your credentials ─────
-  # 1. Uncomment the AWS_* env passthrough in docker-compose.yml.
-  # 2. Export AWS credentials in .env (or use an instance role).
-  # 3. Uncomment this block and adjust region/namespace to a metric you
+  # 1. Set the AWS_* variables in .env (or use an instance role).
+  # 2. Uncomment this block, set region + dimensions to a metric you
   #    actually have, then re-run `observer apply`.
   #
   # - key: demo-cloudwatch-cpu
   #   title: EC2 CPU (CloudWatch)
-  #   description: Average CPUUtilization across the region, straight from GetMetricData.
+  #   description: Average CPUUtilization for one EC2 instance, straight from GetMetricData.
   #   source_type: cloudwatch
   #   source_config:
   #     region: us-east-1
   #     namespace: AWS/EC2
   #     metric_name: CPUUtilization
+  #     dimensions:
+  #       InstanceId: i-REPLACE_WITH_YOURS
   #     statistic: Average
   #     period_seconds: 300
   #   thresholds:
@@ -341,7 +347,10 @@ metrics:
   #     unhealthy_operation: over
   #     unhealthy_value: 95
   #   interval: 5
-  #   interval_agent_push: 15
+  #   # 10 (not 15): a stable CloudWatch value only rides the forced push, and
+  #   # the staleness cutoff for a 15-min push is ~16 min — too tight, so it
+  #   # flaps to no_data between pushes. 10-min push → 15-min cutoff, 5-min margin.
+  #   interval_agent_push: 10
   #   agent: demo-agent
 
 services:
@@ -369,32 +378,46 @@ services:
     name: Telemetry pipeline
     description: Push and pull telemetry sources — OTLP, Loki, Elasticsearch.
 
-# ── status page (OPTIONAL) ──────────────────────────────────────────────
-# Subdomains are globally unique — pick your own, then uncomment and
-# re-run `observer apply`. The page goes live at <subdomain>.use.observer.
-#
-# pages:
-#   - key: demo-status
-#     subdomain: my-unique-demo-subdomain
-#     title: Demo Status
-#     metrics:
-#       - metric: demo-http-prometheus-health
-#         group: Edge
-#       - metric: demo-dns-resolve
-#         group: Edge
-#       - metric: demo-tls-expiry
-#         group: Edge
-#       - metric: demo-db-postgres
-#         group: Datastores
-#       - metric: demo-db-mysql
-#         group: Datastores
-#       - metric: demo-db-redis
-#         group: Datastores
-#       - metric: demo-db-mongo
-#         group: Datastores
-#       - metric: demo-otlp-queue-depth
-#         group: Telemetry
-#       - metric: demo-loki-log-rate
-#         group: Telemetry
-#       - metric: demo-es-recent-events
-#         group: Telemetry
+# ── status page ─────────────────────────────────────────────────────────
+# Subdomains are globally unique — pick your own before applying (the page
+# goes live at <subdomain>.use.observer).
+pages:
+  - key: demo-status
+    subdomain: my-unique-demo-subdomain
+    title: Observer Demo Status
+    metrics:
+      - metric: demo-http-prometheus-health
+        group: Edge & network
+      - metric: demo-dns-resolve
+        group: Edge & network
+      - metric: demo-tls-expiry
+        group: Edge & network
+      - metric: demo-tcp-postgres
+        group: Edge & network
+      - metric: demo-db-postgres
+        group: Datastores
+      - metric: demo-db-mysql
+        group: Datastores
+      - metric: demo-db-redis
+        group: Datastores
+      - metric: demo-db-mongo
+        group: Datastores
+      - metric: demo-grpc-health
+        group: Services
+      - metric: demo-websocket-echo
+        group: Services
+      - metric: demo-host-cpu
+        group: Services
+      - metric: demo-manual-vendor
+        group: Services
+      - metric: demo-otlp-queue-depth
+        group: Telemetry
+      - metric: demo-loki-log-rate
+        group: Telemetry
+      - metric: demo-es-recent-events
+        group: Telemetry
+      - metric: demo-prometheus-up
+        group: Telemetry
+      # Uncomment together with the cloudwatch metric above:
+      # - metric: demo-cloudwatch-cpu
+      #   group: Cloud
