@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://status.use.observer"><img src="https://status.use.observer/badge.svg" alt="Observer Cloud live status"></a>
+  <a href="https://status.use.observer"><img src="https://status.use.observer/badge.svg?style=for-the-badge" alt="Observer Cloud live status"></a>
 </p>
 
 A self-contained stack that exercises **every probe source Observer supports**, against real local services. One `docker compose up`, one `observer apply`, and you have a live dashboard with sixteen metrics across fourteen source types — including one that intentionally flips status every minute so you can watch Observer react.
